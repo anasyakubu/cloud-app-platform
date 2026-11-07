@@ -1,0 +1,37 @@
+import express from 'express';
+import mongoose from 'mongoose';
+import cors from 'cors';
+import helmet from 'helmet';
+import cookieParser from 'cookie-parser';
+import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
+import swaggerUi from 'swagger-ui-express';
+import {parse} from 'yaml';
+import fs from 'node:fs';
+import path from 'node:path';
+import {ZodError} from 'zod';
+import {env} from './config/env.js';
+import {errorHandler,notFound} from './utils/http.js';
+import auth from './routes/auth.js';
+import apps from './routes/applications.js';
+import sessions from './routes/sessions.js';
+import billing,{webhookRouter} from './routes/billing.js';
+import admin from './routes/admin.js';
+import {startStreamingGateway} from './services/streaming.js';
+const app=express();app.set('trust proxy',1);app.disable('x-powered-by');app.use(helmet());app.use(cors({origin:env.FRONTEND_URL,credentials:true}));app.use(morgan('combined'));
+// Protect cookie-authenticated endpoints (refresh/logout) using a strict Origin allowlist.
+app.use((req,res,next)=>{if(['POST','PATCH','DELETE','PUT'].includes(req.method)&&req.headers.origin&&req.headers.origin!==env.FRONTEND_URL){res.status(403).json({error:'Origin denied'});return;}next();});
+app.get('/health',(_req,res)=>res.json({ok:true,service:'cloudstream-api'}));
+app.use('/api/v1/billing/webhook',webhookRouter);
+app.use(express.json({limit:'200kb'}));app.use(cookieParser());
+const authLimiter=rateLimit({windowMs:15*60*1000,limit:30,standardHeaders:'draft-7',legacyHeaders:false});
+app.use('/api/v1/auth',authLimiter,auth);
+app.use('/api/v1/applications',apps);
+app.use('/api/v1/sessions',sessions);
+app.use('/api/v1/billing',billing);
+app.use('/api/v1/admin',admin);
+app.use('/api/v1/docs',swaggerUi.serve,swaggerUi.setup(parse(fs.readFileSync(path.resolve(process.cwd(),'../documentation/openapi.yaml'),'utf8'))));
+app.use(notFound);
+app.use((err:any,req:any,res:any,next:any)=>{if(err instanceof ZodError){res.status(400).json({error:'Invalid input',details:err.flatten()});return;}errorHandler(err,req,res,next);});
+async function main(){await mongoose.connect(env.MONGODB_URI,{serverSelectionTimeoutMS:15000});startStreamingGateway();app.listen(env.PORT,'127.0.0.1',()=>console.info(`CloudStream API listening on loopback :${env.PORT}`));}
+main().catch(e=>{console.error(e);process.exit(1)});

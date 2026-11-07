@@ -1,0 +1,30 @@
+import mongoose from 'mongoose';
+import {ReceiveMessageCommand,DeleteMessageCommand,ChangeMessageVisibilityCommand} from '@aws-sdk/client-sqs';
+import {DescribeInstancesCommand,TerminateInstancesCommand} from '@aws-sdk/client-ec2';
+import {GetObjectCommand,DeleteObjectCommand} from '@aws-sdk/client-s3';
+import {pipeline} from 'node:stream/promises';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {spawn} from 'node:child_process';
+import {Readable} from 'node:stream';
+import {env} from '../config/env.js';
+import {ec2,s3,sqs,type Job} from '../aws/clients.js';
+import {Application,ApplicationVersion,Session,ApplicationUpload} from '../models/index.js';
+import {provision,stopInstance,reconcileSessions,recoverQueued,recoverLostProvisioning} from '../services/sessions.js';
+const sleep=(ms:number)=>new Promise<void>(resolve=>setTimeout(resolve,ms));
+function run(command:string,args:string[],timeout=180000){return new Promise<{code:number;stdout:string;stderr:string}>((resolve,reject)=>{const child=spawn(command,args,{stdio:['ignore','pipe','pipe']});let stdout='',stderr='';child.stdout.on('data',b=>stdout+=String(b).slice(0,4000));child.stderr.on('data',b=>stderr+=String(b).slice(0,4000));const killer=setTimeout(()=>child.kill('SIGKILL'),timeout);child.on('error',reject);child.on('close',code=>{clearTimeout(killer);resolve({code:code??-1,stdout:stdout.slice(-4000),stderr:stderr.slice(-4000)});});});}
+async function scan(versionId:string){const version=await ApplicationVersion.findOneAndUpdate({_id:versionId,status:'scanning'},{$set:{scanReport:'Scanning file'}},{new:true});if(!version)return;const work=await fs.promises.mkdtemp(path.join(os.tmpdir(),'cs-scan-'));const target=path.join(work,'package');try{
+ const obj=await s3.send(new GetObjectCommand({Bucket:env.AWS_S3_BUCKET,Key:version.s3Key}));if(!obj.Body)throw new Error('S3 object has no body');await pipeline(Readable.fromWeb(obj.Body.transformToWebStream() as any),fs.createWriteStream(target,{mode:0o600}));const app=await Application.findById(version.app);if(!app)throw new Error('Application deleted');
+ const safety=await run('python3',[path.resolve(process.cwd(),'scripts/scan-package.py'),target,app.format],60000);if(safety.code!==0)throw new Error(`Invalid application archive: ${safety.stderr.slice(0,200)}`);
+ const clam=await run('clamscan',['--no-summary','--infected',target],600000);if(clam.code!==0)throw new Error(clam.code===1?'Malware signature detected':`Malware scanner unavailable: ${clam.stderr}`);
+ const status=env.REQUIRE_ADMIN_APPROVAL?'pending_review':'approved';await ApplicationVersion.updateOne({_id:version.id},{$set:{status,scanReport:'Format checks and ClamAV scan passed'}});await Application.updateOne({_id:app.id},{$set:{status}});
+ }catch(err:any){console.error('Scan failed',versionId,err);await ApplicationVersion.updateOne({_id:version.id},{$set:{status:'failed',scanReport:String(err.message||err).slice(0,500)}});await Application.updateOne({_id:version.app},{$set:{status:'failed'}});}finally{await fs.promises.rm(work,{recursive:true,force:true});}}
+async function sweepOrphans(){const response=await ec2.send(new DescribeInstancesCommand({Filters:[{Name:'tag:Project',Values:['CloudStream']},{Name:'tag:ManagedBy',Values:['cloudstream-worker']},{Name:'instance-state-name',Values:['pending','running','stopping','stopped']}]}));for(const i of response.Reservations?.flatMap(r=>r.Instances||[])||[]){const sid=i.Tags?.find(t=>t.Key==='SessionId')?.Value;if(!i.InstanceId||!sid)continue;const inDb=await Session.findOne({_id:sid,instanceId:i.InstanceId});if(inDb)continue;const launched=i.LaunchTime?.getTime()||Date.now();if(Date.now()-launched<20*60000)continue;console.error('Terminating orphaned session instance',i.InstanceId);await ec2.send(new TerminateInstancesCommand({InstanceIds:[i.InstanceId]}));}}
+async function removeOldObjects(){const old=await Application.find({deletedAt:{$lt:new Date(Date.now()-7*86400000)}}).limit(30);for(const app of old){if(await Session.exists({app:app.id,state:{$nin:['stopped','failed']}}))continue;const versions=await ApplicationVersion.find({app:app.id});for(const v of versions){await s3.send(new DeleteObjectCommand({Bucket:env.AWS_S3_BUCKET,Key:v.s3Key}));await v.deleteOne();}await app.deleteOne();}}
+async function pruneExpiredUploads(){const uploads=await ApplicationUpload.find({state:'active',expiresAt:{$lt:new Date()}}).select('+awsUploadId').limit(50);const {AbortMultipartUploadCommand}=await import('@aws-sdk/client-s3');for(const u of uploads){try{await s3.send(new AbortMultipartUploadCommand({Bucket:env.AWS_S3_BUCKET,Key:u.s3Key,UploadId:u.awsUploadId}));await u.updateOne({state:'aborted'});}catch(e){console.error('Expired upload abort failed',u.id,e);}}}
+async function handle(job:Job){if(job.kind==='scan')return scan(job.versionId);if(job.kind==='launch')return provision(job.sessionId);if(job.kind==='stop')return stopInstance(job.sessionId);}
+async function main(){await mongoose.connect(env.MONGODB_URI);console.info('CloudStream AWS worker started (native host, no app execution)');let lastReconcile=0,lastSweep=0;while(true){try{if(Date.now()-lastReconcile>30000){lastReconcile=Date.now();await reconcileSessions();await recoverQueued();await recoverLostProvisioning();}if(Date.now()-lastSweep>300000){lastSweep=Date.now();await sweepOrphans();await removeOldObjects();await pruneExpiredUploads();}
+ const response=await sqs.send(new ReceiveMessageCommand({QueueUrl:env.AWS_SQS_QUEUE_URL,MaxNumberOfMessages:5,WaitTimeSeconds:15,VisibilityTimeout:900}));for(const msg of response.Messages||[]){if(!msg.Body||!msg.ReceiptHandle)continue;try{const job=JSON.parse(msg.Body) as Job;await handle(job);await sqs.send(new DeleteMessageCommand({QueueUrl:env.AWS_SQS_QUEUE_URL,ReceiptHandle:msg.ReceiptHandle}));}catch(e){console.error('SQS job failed; will retry after visibility timeout',e);}}
+ }catch(e){console.error('Worker loop error',e);await sleep(5000);}}}
+main().catch(e=>{console.error(e);process.exit(1)});

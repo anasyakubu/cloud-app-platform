@@ -1,0 +1,17 @@
+import {Router} from 'express';
+import {z} from 'zod';
+import {Application,ApplicationVersion,Session} from '../models/index.js';
+import {authenticate} from '../middleware/auth.js';
+import {asyncRoute,HttpError,assertId,page} from '../utils/http.js';
+import {startUpload,presignPart,finishUpload,abortUpload} from '../services/uploads.js';
+const r=Router();r.use(authenticate);
+r.get('/',asyncRoute(async(req,res)=>{const {skip,limit}=page(req);const filter={owner:req.auth!.id,deletedAt:{$exists:false}};const [items,total]=await Promise.all([Application.find(filter).sort({createdAt:-1}).skip(skip).limit(limit).lean(),Application.countDocuments(filter)]);res.json({items,total});}));
+r.post('/uploads',asyncRoute(async(req,res)=>res.status(201).json(await startUpload(req.auth!.id,req.body))));
+r.get('/uploads/:id/part/:part',asyncRoute(async(req,res)=>res.json(await presignPart(req.auth!.id,assertId(req.params.id),Number(req.params.part)))));
+r.post('/uploads/:id/complete',asyncRoute(async(req,res)=>{const input=z.object({parts:z.array(z.object({ETag:z.string(),PartNumber:z.number().int()})).min(1)}).parse(req.body);res.json(await finishUpload(req.auth!.id,assertId(req.params.id),input.parts));}));
+r.delete('/uploads/:id',asyncRoute(async(req,res)=>{await abortUpload(req.auth!.id,assertId(req.params.id));res.status(204).end();}));
+r.get('/:id',asyncRoute(async(req,res)=>{const app=await Application.findOne({_id:assertId(req.params.id),owner:req.auth!.id,deletedAt:{$exists:false}}).populate('currentVersion','version size status scanReport createdAt');if(!app)throw new HttpError(404,'Application not found');res.json({app});}));
+r.get('/:id/versions',asyncRoute(async(req,res)=>{const app=await Application.findOne({_id:assertId(req.params.id),owner:req.auth!.id});if(!app)throw new HttpError(404,'Application not found');res.json({items:await ApplicationVersion.find({app:app.id}).select('-s3Key').sort({createdAt:-1})});}));
+r.patch('/:id',asyncRoute(async(req,res)=>{const input=z.object({name:z.string().trim().min(2).max(120).optional(),description:z.string().max(3000).optional(),category:z.string().max(100).optional()}).strict().parse(req.body);const app=await Application.findOneAndUpdate({_id:assertId(req.params.id),owner:req.auth!.id,deletedAt:{$exists:false}},{$set:input},{new:true});if(!app)throw new HttpError(404,'Application not found');res.json({app});}));
+r.delete('/:id',asyncRoute(async(req,res)=>{const id=assertId(req.params.id);if(await Session.exists({app:id,state:{$in:['queued','provisioning','preparing','starting','running','reconnecting','stopping']}}))throw new HttpError(409,'Stop running sessions first');const app=await Application.findOneAndUpdate({_id:id,owner:req.auth!.id,deletedAt:{$exists:false}},{$set:{deletedAt:new Date()}},{new:true});if(!app)throw new HttpError(404,'Application not found');res.json({message:'Application archived; object retention cleanup will follow'});}));
+export default r;

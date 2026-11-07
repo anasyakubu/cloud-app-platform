@@ -1,0 +1,36 @@
+import mongoose, { Schema, model, type InferSchemaType } from 'mongoose';
+
+const opts={timestamps:true};
+const oid=Schema.Types.ObjectId;
+const tokenSchema=new Schema({hash:{type:String,required:true},createdAt:{type:Date,default:Date.now},expiresAt:Date},{_id:false});
+const userSchema=new Schema({name:{type:String,required:true,trim:true,maxlength:100},email:{type:String,required:true,lowercase:true,trim:true,unique:true},passwordHash:{type:String,required:true,select:false},role:{type:String,enum:['user','admin','super_admin'],default:'user'},verifiedAt:Date,suspendedAt:Date,activeSessions:{type:Number,default:0,min:0},refreshTokens:{type:[tokenSchema],default:[],select:false},verificationTokenHash:{type:String,select:false},verificationExpires:Date,resetTokenHash:{type:String,select:false},resetExpires:Date},{...opts});
+export const User=model('User',userSchema);
+
+const appSchema=new Schema({owner:{type:oid,ref:'User',required:true,index:true},name:{type:String,required:true,maxlength:120},description:{type:String,default:'',maxlength:3000},category:{type:String,default:'Other'},os:{type:String,enum:['linux'],default:'linux'},format:{type:String,enum:['appimage','tar.gz'],required:true},version:{type:String,default:'1.0.0'},startupExecutable:{type:String,required:true},startupArgs:{type:[String],default:[]},environment:{type:Map,of:String,default:{}},requirements:{cpu:{type:Number,default:2},ramGb:{type:Number,default:4},storageGb:{type:Number,default:20},gpu:{type:Boolean,default:false}},currentVersion:{type:oid,ref:'ApplicationVersion'},status:{type:String,enum:['uploading','scanning','pending_review','approved','rejected','failed'],default:'uploading',index:true},lastLaunchedAt:Date,deletedAt:Date},{...opts});
+appSchema.index({owner:1,createdAt:-1});
+export const Application=model('Application',appSchema);
+const versionSchema=new Schema({app:{type:oid,ref:'Application',required:true,index:true},version:{type:String,required:true},s3Key:{type:String,required:true,unique:true},size:{type:Number,required:true},sha256:{type:String},status:{type:String,enum:['uploading','scanning','pending_review','approved','rejected','failed'],default:'uploading'},scanReport:{type:String},reviewedBy:{type:oid,ref:'User'},reviewedAt:Date},{...opts});
+export const ApplicationVersion=model('ApplicationVersion',versionSchema);
+const uploadSchema=new Schema({owner:{type:oid,ref:'User',required:true,index:true},app:{type:oid,ref:'Application',required:true},version:{type:oid,ref:'ApplicationVersion',required:true},awsUploadId:{type:String,required:true,select:false},s3Key:{type:String,required:true},size:{type:Number,required:true},parts:{type:Number,required:true},state:{type:String,enum:['active','completed','aborted','failed'],default:'active'},expiresAt:{type:Date,required:true}},{...opts});
+uploadSchema.index({expiresAt:1},{expireAfterSeconds:604800});
+export const ApplicationUpload=model('ApplicationUpload',uploadSchema);
+const instanceSchema=new Schema({name:{type:String,required:true,unique:true},instanceType:{type:String,required:true,unique:true},cpu:{type:Number,required:true},ramGb:{type:Number,required:true},gpu:{type:Number,default:0},storageGb:{type:Number,required:true,min:20,max:200},os:{type:String,enum:['linux'],default:'linux'},priceKoboPerHour:{type:Number,required:true,min:0},enabled:{type:Boolean,default:false},verifiedAt:Date,region:{type:String,required:true}},{...opts});
+export const InstanceConfiguration=model('InstanceConfiguration',instanceSchema);
+const sessionSchema=new Schema({user:{type:oid,ref:'User',required:true,index:true},app:{type:oid,ref:'Application',required:true},version:{type:oid,ref:'ApplicationVersion',required:true},configuration:{type:oid,ref:'InstanceConfiguration',required:true},state:{type:String,enum:['pending','queued','provisioning','preparing','starting','running','reconnecting','stopping','stopped','failed'],default:'queued',index:true},instanceId:{type:String,index:true},privateIp:{type:String,select:false},vncSecret:{type:String,select:false},instanceType:{type:String,required:true},cpu:Number,ramGb:Number,gpu:Number,os:{type:String,default:'linux'},maxMinutes:{type:Number,required:true},holdKobo:{type:Number,required:true},priceKoboPerHour:{type:Number,required:true},allocatedAt:Date,runningAt:Date,endedAt:Date,lastConnectedAt:Date,lastHeartbeatAt:Date,sessionCostKobo:{type:Number,default:0},billingSettledAt:Date,failureReason:String,stopRequestedAt:Date,healthCommandId:String,terminateAttempts:{type:Number,default:0}},{...opts});
+sessionSchema.index({user:1,createdAt:-1});
+export const Session=model('Session',sessionSchema);
+const usageSchema=new Schema({session:{type:oid,ref:'Session',required:true,index:true},sampledAt:{type:Date,default:Date.now},cpuPct:Number,ramPct:Number,ramBytes:Number,estimatedCostKobo:Number},{...opts});
+usageSchema.index({sampledAt:1},{expireAfterSeconds:60*60*24*90});
+export const SessionUsage=model('SessionUsage',usageSchema);
+const walletSchema=new Schema({user:{type:oid,ref:'User',required:true,unique:true},balanceKobo:{type:Number,default:0,min:0},reservedKobo:{type:Number,default:0,min:0},currency:{type:String,default:'NGN'}},{...opts});
+export const Wallet=model('Wallet',walletSchema);
+const transactionSchema=new Schema({user:{type:oid,ref:'User',required:true,index:true},kind:{type:String,enum:['topup','hold','charge','release','refund'],required:true},amountKobo:{type:Number,required:true},reference:{type:String,required:true,unique:true},session:{type:oid,ref:'Session'},provider:{type:String,default:'internal'},status:{type:String,enum:['pending','completed','failed'],default:'completed'},meta:{type:Schema.Types.Mixed}},{...opts});
+export const Transaction=model('Transaction',transactionSchema);
+const subscriptionSchema=new Schema({user:{type:oid,ref:'User',required:true,index:true},plan:{type:String,default:'pay_as_you_go'},status:{type:String,enum:['active','inactive','cancelled'],default:'inactive'},renewsAt:Date},{...opts});
+export const Subscription=model('Subscription',subscriptionSchema);
+const auditSchema=new Schema({actor:{type:oid,ref:'User'},action:{type:String,required:true,index:true},subject:String,details:{type:Schema.Types.Mixed},ip:String},{...opts});
+auditSchema.index({createdAt:-1});
+export const AuditLog=model('AuditLog',auditSchema);
+const notificationSchema=new Schema({user:{type:oid,ref:'User',required:true,index:true},title:String,message:String,readAt:Date},{...opts});
+export const Notification=model('Notification',notificationSchema);
+export const objectId=(id:string)=>new mongoose.Types.ObjectId(id);

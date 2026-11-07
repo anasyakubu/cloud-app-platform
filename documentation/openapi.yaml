@@ -1,0 +1,263 @@
+openapi: 3.0.3
+info:
+  title: CloudStream REST API
+  version: 1.0.0
+  description: Native Linux application streaming control plane. Authenticated routes use short-lived bearer JWTs.
+servers:
+  - url: /api/v1
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+    Session:
+      type: object
+      properties:
+        _id: { type: string }
+        state: { type: string, enum: [pending,queued,provisioning,preparing,starting,running,reconnecting,stopping,stopped,failed] }
+        instanceId: { type: string }
+    Application:
+      type: object
+      properties:
+        _id: { type: string }
+        name: { type: string }
+        status: { type: string }
+paths:
+  /auth/register:
+    post:
+      summary: Register a user and dispatch a verification email
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name,email,password]
+              properties:
+                name: {type: string}
+                email: {type: string, format: email}
+                password: {type: string, minLength: 12}
+      responses:
+        '201': {description: Account created pending verification}
+  /auth/verify-email:
+    post:
+      summary: Verify a link token emailed by Amazon SES
+      responses:
+        '200': {description: Verified}
+  /auth/login:
+    post:
+      summary: Sign in and set rotating HTTP-only refresh cookie
+      responses:
+        '200': {description: Returns accessToken and user}
+  /auth/refresh:
+    post:
+      summary: Rotate secure refresh token
+      responses:
+        '200': {description: Returns a new accessToken}
+  /auth/logout:
+    post:
+      summary: Revoke current refresh cookie
+      responses:
+        '200': {description: Logged out}
+  /auth/forgot-password:
+    post:
+      summary: Request password reset email
+      responses:
+        '200': {description: Accepted}
+  /auth/reset-password:
+    post:
+      summary: Reset password using emailed token
+      responses:
+        '200': {description: Password reset}
+  /auth/me:
+    get:
+      security: [{bearerAuth: []}]
+      summary: Current user profile
+      responses: {'200': {description: User profile}}
+    patch:
+      security: [{bearerAuth: []}]
+      summary: Update name
+      responses: {'200': {description: User profile updated}}
+    delete:
+      security: [{bearerAuth: []}]
+      summary: Delete account if no active sessions
+      responses: {'200': {description: Account deleted}}
+  /applications:
+    get:
+      security: [{bearerAuth: []}]
+      summary: List own application library
+      responses: {'200': {description: Paginated list}}
+  /applications/uploads:
+    post:
+      security: [{bearerAuth: []}]
+      summary: Create S3 multipart upload and application version
+      responses: {'201': {description: Upload ID and 8 MiB part size}}
+  /applications/uploads/{id}/part/{part}:
+    get:
+      security: [{bearerAuth: []}]
+      summary: Presign one S3 multipart UploadPart operation
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string}}
+        - {in: path, name: part, required: true, schema: {type: integer}}
+      responses: {'200': {description: Presigned URL}}
+  /applications/uploads/{id}/complete:
+    post:
+      security: [{bearerAuth: []}]
+      summary: Complete multipart upload and enqueue malware scan
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string}}
+      responses: {'200': {description: Scan enqueued}}
+  /applications/uploads/{id}:
+    delete:
+      security: [{bearerAuth: []}]
+      summary: Abort incomplete multipart upload
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string}}
+      responses: {'204': {description: Aborted}}
+  /applications/{id}:
+    get:
+      security: [{bearerAuth: []}]
+      summary: Get own application details
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}]
+      responses: {'200': {description: Application details}}
+    patch:
+      security: [{bearerAuth: []}]
+      summary: Update application metadata
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}]
+      responses: {'200': {description: Updated}}
+    delete:
+      security: [{bearerAuth: []}]
+      summary: Archive application after stopping sessions
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}]
+      responses: {'200': {description: Archived}}
+  /sessions/configurations:
+    get:
+      security: [{bearerAuth: []}]
+      summary: View admin-enabled, AWS-verified machine shapes
+      responses: {'200': {description: Machine configurations}}
+  /sessions:
+    get:
+      security: [{bearerAuth: []}]
+      summary: List own sessions and history
+      responses: {'200': {description: Paginated sessions}}
+    post:
+      security: [{bearerAuth: []}]
+      summary: Reserve wallet, enqueue isolated native EC2 session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [appId,configurationId,maxMinutes]
+              properties:
+                appId: {type: string}
+                configurationId: {type: string}
+                maxMinutes: {type: integer, minimum: 5, maximum: 60}
+      responses: {'201': {description: New queued session}, '402': {description: Insufficient balance}}
+  /sessions/{id}:
+    get:
+      security: [{bearerAuth: []}]
+      summary: Authoritative EC2-backed session state
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}]
+      responses: {'200': {description: Session}}
+  /sessions/{id}/stop:
+    post:
+      security: [{bearerAuth: []}]
+      summary: Queue EC2 termination
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}]
+      responses: {'202': {description: Termination queued}}
+  /sessions/{id}/restart:
+    post:
+      security: [{bearerAuth: []}]
+      summary: Start new session from stopped/failed session config
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}]
+      responses: {'201': {description: New session created}}
+  /sessions/{id}/connection-ticket:
+    post:
+      security: [{bearerAuth: []}]
+      summary: Mint one-minute encrypted and signed Guacamole VNC connection token
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}]
+      responses: {'200': {description: Browser WebSocket URL}}
+  /sessions/{id}/heartbeat:
+    post:
+      security: [{bearerAuth: []}]
+      summary: Authenticated activity heartbeat
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}]
+      responses: {'200': {description: Heartbeat recorded}}
+  /sessions/{id}/usage:
+    get:
+      security: [{bearerAuth: []}]
+      summary: Resource samples recorded from EC2 Systems Manager
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}]
+      responses: {'200': {description: Resource usage}}
+  /sessions/{id}/logs:
+    get:
+      security: [{bearerAuth: []}]
+      summary: Read own application stdout/stderr from CloudWatch Logs
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}]
+      responses: {'200': {description: Latest log events}}
+  /billing/wallet:
+    get:
+      security: [{bearerAuth: []}]
+      summary: NGN available and reserved balance
+      responses: {'200': {description: Wallet}}
+  /billing/transactions:
+    get:
+      security: [{bearerAuth: []}]
+      summary: Usage and payment ledger
+      responses: {'200': {description: Transactions}}
+  /billing/topup:
+    post:
+      security: [{bearerAuth: []}]
+      summary: Initialize an NGN Paystack checkout
+      responses: {'200': {description: Paystack authorization URL}}
+  /billing/verify:
+    post:
+      security: [{bearerAuth: []}]
+      summary: Verify payment server-side before crediting wallet
+      responses: {'200': {description: Payment confirmation}}
+  /billing/webhook:
+    post:
+      summary: Signed Paystack charge.success webhook; raw body HMAC SHA-512
+      responses: {'200': {description: Acknowledged}, '401': {description: Invalid signature}}
+  /admin/overview:
+    get:
+      security: [{bearerAuth: []}]
+      summary: Aggregate admin counts
+      responses: {'200': {description: Counts}}
+  /admin/users:
+    get:
+      security: [{bearerAuth: []}]
+      summary: Admin user listing
+      responses: {'200': {description: Users}}
+  /admin/applications:
+    get:
+      security: [{bearerAuth: []}]
+      summary: Admin software approval queue
+      responses: {'200': {description: Applications}}
+  /admin/sessions:
+    get:
+      security: [{bearerAuth: []}]
+      summary: All active and historic sessions
+      responses: {'200': {description: Sessions}}
+  /admin/configurations:
+    get:
+      security: [{bearerAuth: []}]
+      summary: Admin machine catalog
+      responses: {'200': {description: Configurations}}
+    post:
+      security: [{bearerAuth: []}]
+      summary: Validate EC2 region offering and add disabled CPU machine configuration
+      responses: {'201': {description: Configuration saved}}
+  /admin/audit:
+    get:
+      security: [{bearerAuth: []}]
+      summary: Administrative audit events
+      responses: {'200': {description: Audit events}}

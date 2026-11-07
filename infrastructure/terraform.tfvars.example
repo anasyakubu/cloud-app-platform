@@ -1,0 +1,7 @@
+aws_region = "eu-west-1"
+name = "cloudstream"
+frontend_url = "https://app.example.com"
+backend_ami_id = "ami-REPLACE-WITH-UBUNTU-2404-AMD64"
+execution_ami_id = "ami-REPLACE-WITH-PRIVATE-BUILT-IMAGE"
+backend_instance_type = "t3.medium"
+worker_instance_type = "t3.large"
