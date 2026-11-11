@@ -5,3 +5,8 @@ backend_ami_id = "ami-REPLACE-WITH-UBUNTU-2404-AMD64"
 execution_ami_id = "ami-REPLACE-WITH-PRIVATE-BUILT-IMAGE"
 backend_instance_type = "t3.medium"
 worker_instance_type = "t3.large"
+
+# Additional exact frontend URLs, e.g. your www domain
+additional_frontend_urls = []
+# Optional: AWS sends a verification email to this address
+ses_sender_email = ""

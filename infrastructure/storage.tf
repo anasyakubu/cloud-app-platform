@@ -39,7 +39,7 @@ resource "aws_s3_bucket_cors_configuration" "apps" {
   cors_rule {
     allowed_headers = ["*"]
     allowed_methods = ["PUT","GET","HEAD"]
-    allowed_origins = [var.frontend_url]
+    allowed_origins = distinct(concat([var.frontend_url], var.additional_frontend_urls))
     expose_headers = ["ETag"]
     max_age_seconds = 3000
   }

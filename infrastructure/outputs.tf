@@ -45,3 +45,8 @@ output "cloudwatch_log_group" {
 output "backend_secret_arn" {
   value = aws_secretsmanager_secret.backend.arn
 }
+
+output "ses_sender_identity" {
+  description = "SES sender identity requested by Terraform; verify this address before sending"
+  value       = var.ses_sender_email
+}

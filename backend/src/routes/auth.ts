@@ -2,11 +2,10 @@ import { Router } from 'express';
 import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import argon2 from 'argon2';
-import { SendEmailCommand } from '@aws-sdk/client-ses';
 import { z } from 'zod';
 import { User, Wallet, AuditLog } from '../models/index.js';
 import { env } from '../config/env.js';
-import { ses } from '../aws/clients.js';
+import { requireSes, sendVerificationEmail, sendResetEmail, EMAIL_RESEND_INTERVAL_MS, EMAIL_VERIFICATION_TTL_MS } from '../services/email.js';
 import { authenticate } from '../middleware/auth.js';
 import { asyncRoute, HttpError } from '../utils/http.js';
 import { randomToken, sha256 } from '../utils/crypto.js';
@@ -15,7 +14,7 @@ const r = Router();
 
 const credentials = z.object({
   email: z.string().email().max(254).transform((v) => v.toLowerCase()),
-  password: z.string().min(12).max(128),
+  password: z.string().min(5).max(128),
 });
 
 const safeUser = (u: any) => ({
@@ -63,72 +62,72 @@ async function issueRefresh(res: any, user: any) {
   return accessToken(user);
 }
 
-async function email(to: string, subject: string, body: string) {
-  if (!env.SES_ENABLED) {
-    console.warn('SES disabled: mail not delivered to', to);
-    return false;
-  }
+// Verification is a voluntary account-security feature, not a login prerequisite.
+const resendResult = {message: 'If that email belongs to an unverified account, a verification link will be sent shortly.'};
 
-  if (!env.SES_FROM_EMAIL) {
-    throw new HttpError(503, 'Email service not configured');
-  }
+r.post('/register', asyncRoute(async (req, res) => {
+  // Accounts can be used immediately. SES is only required to *send* an
+  // optional verification message, not to create an account or use the app.
+  const body = credentials.extend({ name: z.string().trim().min(2).max(100) }).parse(req.body);
+  if (await User.exists({ email: body.email })) throw new HttpError(409, 'Email is already registered');
 
-  await ses.send(
-    new SendEmailCommand({
-      Source: env.SES_FROM_EMAIL,
-      Destination: { ToAddresses: [to] },
-      Message: {
-        Subject: { Data: subject },
-        Body: { Text: { Data: body } },
-      },
-    })
-  );
+  const sendOptionalEmail = env.SES_ENABLED && !!env.SES_FROM_EMAIL;
+  const verificationToken = sendOptionalEmail ? randomToken() : undefined;
+  const user = await User.create({
+    name: body.name,
+    email: body.email,
+    passwordHash: await argon2.hash(body.password),
+    ...(verificationToken ? {
+      verificationTokenHash: sha256(verificationToken),
+      verificationExpires: new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS),
+      verificationSentAt: new Date(),
+    } : {}),
+  });
+  await Wallet.create({ user: user.id });
 
-  return true;
-}
-
-// When email verification is required, do not permit login until the link is used.
-r.post(
-  '/register',
-  asyncRoute(async (req, res) => {
-    const body = credentials
-      .extend({ name: z.string().trim().min(2).max(100) })
-      .parse(req.body);
-
-    if (await User.exists({ email: body.email })) {
-      throw new HttpError(409, 'Email is already registered');
-    }
-
-    const token = randomToken();
-    const user = await User.create({
-      name: body.name,
-      email: body.email,
-      passwordHash: await argon2.hash(body.password),
-      verificationTokenHash: sha256(token),
-      verificationExpires: new Date(Date.now() + 86400000),
-    });
-
-    await Wallet.create({ user: user.id });
-
+  // Issue authenticated access regardless of SES configuration or delivery.
+  const accessToken = await issueRefresh(res, user);
+  let verificationEmailSent = false;
+  if (verificationToken) {
     try {
-      await email(
-        user.email,
-        'Verify your CloudStream email',
-        `${env.FRONTEND_URL}/verify-email?token=${encodeURIComponent(
-          token
-        )}&email=${encodeURIComponent(user.email)}`
-      );
+      await sendVerificationEmail(user.email, verificationToken);
+      verificationEmailSent = true;
     } catch (err) {
-      console.error('Verification email failed', err);
+      console.error('Optional SES verification delivery failed', err);
+      // A mail-provider outage must not prevent registration or page access.
     }
+  }
+  res.status(201).json({
+    accessToken,
+    user: safeUser(user),
+    verificationEmailSent,
+    message: 'Account created. Email verification is optional and can be completed later in Profile.',
+  });
+}));
 
-    res.status(201).json({
-      message: env.SES_ENABLED
-        ? 'Check your inbox to verify your account'
-        : 'Account created, but email delivery is not configured; contact the administrator.',
-    });
-  })
-);
+// Public recovery path for accounts created before SES was enabled or failed delivery.
+// Generic response avoids account enumeration. Rate limited at the HTTP layer.
+r.post('/resend-verification', asyncRoute(async (req, res) => {
+  requireSes();
+  const { email } = z.object({email: z.string().email().max(254).transform(v => v.toLowerCase())}).parse(req.body);
+  const user = await User.findOne({email}).select('+verificationTokenHash');
+  if (user && !user.verifiedAt && !user.suspendedAt &&
+      (!user.verificationSentAt || Date.now() - user.verificationSentAt.getTime() >= EMAIL_RESEND_INTERVAL_MS)) {
+    const token = randomToken();
+    user.verificationTokenHash = sha256(token);
+    user.verificationExpires = new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS);
+    // Reserve the cooldown before sending, to prevent concurrent sends.
+    user.verificationSentAt = new Date();
+    await user.save();
+    try { await sendVerificationEmail(user.email, token); }
+    catch (err) {
+      console.error('SES verification resend failed', err);
+      // User can retry after the cooldown; token is never exposed in logs.
+      throw new HttpError(503, 'Email delivery is temporarily unavailable. Please try again shortly.', 'EMAIL_SEND_FAILED');
+    }
+  }
+  res.json(resendResult);
+}));
 
 r.post(
   '/verify-email',
@@ -155,7 +154,7 @@ r.post(
     user.verificationExpires = undefined;
     await user.save();
 
-    res.json({ message: 'Email verified' });
+    res.json({ message: 'Email verified successfully. You can continue using your account.' });
   })
 );
 
@@ -176,10 +175,6 @@ r.post(
       throw new HttpError(403, 'Account suspended');
     }
 
-    // if (!user.verifiedAt) {
-    //   throw new HttpError(403, 'Verify your email before logging in');
-    // }
-
     const token = await issueRefresh(res, user);
     res.json({ accessToken: token, user: safeUser(user) });
   })
@@ -198,7 +193,7 @@ r.post(
       'refreshTokens.hash': sha256(raw),
     }).select('+refreshTokens');
 
-    if (!user || user.suspendedAt || !user.verifiedAt) {
+    if (!user || user.suspendedAt) {
       throw new HttpError(401, 'Session expired');
     }
 
@@ -235,37 +230,23 @@ r.post(
   })
 );
 
-r.post(
-  '/forgot-password',
-  asyncRoute(async (req, res) => {
-    const body = z.object({ email: z.string().email() }).parse(req.body);
-
-    const user = await User.findOne({
-      email: body.email.toLowerCase(),
-    }).select('+resetTokenHash');
-
-    if (user) {
-      const token = randomToken();
-
-      user.resetTokenHash = sha256(token);
-      user.resetExpires = new Date(Date.now() + 3600000);
-      await user.save();
-
-      await email(
-        user.email,
-        'Reset your CloudStream password',
-        `${env.FRONTEND_URL}/reset-password?token=${encodeURIComponent(
-          token
-        )}&email=${encodeURIComponent(user.email)}`
-      );
+r.post('/forgot-password', asyncRoute(async (req, res) => {
+  requireSes();
+  const body = z.object({email: z.string().email().max(254).transform(v => v.toLowerCase())}).parse(req.body);
+  const user = await User.findOne({email: body.email}).select('+resetTokenHash');
+  if (user && !user.suspendedAt) {
+    const token = randomToken();
+    user.resetTokenHash = sha256(token);
+    user.resetExpires = new Date(Date.now() + 3600000);
+    await user.save();
+    try { await sendResetEmail(user.email, token); }
+    catch (err) {
+      console.error('SES password reset delivery failure', err);
+      throw new HttpError(503, 'Email delivery is temporarily unavailable. Try again shortly.', 'EMAIL_SEND_FAILED');
     }
-
-    res.json({
-      message:
-        'If your account exists, password reset instructions will be sent.',
-    });
-  })
-);
+  }
+  res.json({message: 'If your account exists, password reset instructions will be sent.'});
+}));
 
 r.post(
   '/reset-password',
@@ -328,7 +309,7 @@ r.post(
     const body = z
       .object({
         currentPassword: z.string(),
-        newPassword: z.string().min(12),
+        newPassword: z.string().min(5).max(128),
       })
       .parse(req.body);
 

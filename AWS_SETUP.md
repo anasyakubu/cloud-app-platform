@@ -126,7 +126,7 @@ The IAM roles on API and worker have only secret-read permission for this ARN. T
 
 ## 7. SES, Atlas, Paystack and webhooks
 
-Verify `SES_FROM_EMAIL` with SES and move beyond the SES sandbox before emailing new arbitrary customer addresses. Set `SES_ENABLED=true` to deliver login verification and password reset messages. Without SES setup, registration cannot be completed by normal users (a security feature, not a mock email service).
+Verify `SES_FROM_EMAIL` with SES and move beyond the SES sandbox before emailing new arbitrary customer addresses. Set `SES_ENABLED=true` to deliver optional email verification and password reset messages. Without SES setup, users can still register, log in, and use their dashboards; only sending verification/reset emails requires SES.
 
 Create a MongoDB Atlas replica set deployment for transactions. Allowlist the API Elastic IP and NAT Elastic IP; require TLS and strong Atlas users. In production prefer private networking/PrivateLink if available and appropriate for your Atlas plan.
 
@@ -137,3 +137,7 @@ Use Paystack test mode first. The server initializes payments using secret keys 
 Set EC2 On-Demand vCPU quotas, budgets and billing alarms, restrict the admin machine catalog to permitted CPU types, and keep `DEFAULT_MAX_SESSION_MINUTES` low. Only add EC2 instance types offered in the selected region (the admin API calls actual `DescribeInstanceTypes` and `DescribeInstanceTypeOfferings`). **Regional offering does not guarantee available capacity**; launches may still fail if quotas/capacity are exhausted. By design the supplied API rejects GPU configurations until a driver-enabled GPU AMI is built. Confirm that the actual AMI is x86_64-compatible with the selected EC2 type.
 
 Session worker polls EC2 + SSM and terminates timeout/idle sessions. An orphan scan finds tagged resources not registered in MongoDB and terminates after a conservative grace period. App files are removed from S3 after a seven-day application deletion grace. A root EBS volume is encrypted and deleted on EC2 termination. Also set CloudWatch alarms for worker health, failed EC2 launches, DLQ messages, unexpected NAT/EBS charges and sustained instance count.
+
+## Updated SES + browser-origin configuration
+
+This revision includes optional Terraform `ses_sender_email` (creates an SESv2 identity registration) and `additional_frontend_urls` for multipart S3 CORS, and already grants `ses:SendEmail` to the API IAM role. SES identity registration alone **does not** verify an address or exit the sending sandbox. Confirm the verification email/DNS and set backend `SES_ENABLED=true` and `SES_FROM_EMAIL`. Match `FRONTEND_URL`, `FRONTEND_ORIGINS` and frontend `VITE_API_URL` to the actual deployment. See [AUTH_SES_403_FIX.md](AUTH_SES_403_FIX.md) for exact commands and checks.

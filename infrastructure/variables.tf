@@ -37,3 +37,15 @@ variable "execution_volume_size" {
   type = number
   default = 40
 }
+
+variable "additional_frontend_urls" {
+  type = list(string)
+  description = "Optional exact additional frontend origins for S3 multipart CORS"
+  default = []
+}
+
+variable "ses_sender_email" {
+  type        = string
+  description = "Optional SES sender address to request verification of in this region"
+  default     = ""
+}

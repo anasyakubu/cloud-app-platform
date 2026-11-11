@@ -31,7 +31,7 @@ components:
 paths:
   /auth/register:
     post:
-      summary: Register a user and dispatch a verification email
+      summary: Register and sign in immediately; optionally email a verification link
       requestBody:
         required: true
         content:
@@ -42,9 +42,24 @@ paths:
               properties:
                 name: {type: string}
                 email: {type: string, format: email}
-                password: {type: string, minLength: 12}
+                password: {type: string, minLength: 5}
       responses:
-        '201': {description: Account created pending verification}
+        '201': {description: Account created, signed-in accessToken and refresh cookie returned; optional SES link may be sent}
+  /auth/resend-verification:
+    post:
+      summary: Resend Amazon SES verification message (public, rate limited)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: {type: string, format: email}
+      responses:
+        '200': {description: Generic response whether an eligible account exists}
+        '503': {description: SES is not configured or delivery failed}
   /auth/verify-email:
     post:
       summary: Verify a link token emailed by Amazon SES
@@ -52,7 +67,7 @@ paths:
         '200': {description: Verified}
   /auth/login:
     post:
-      summary: Sign in and set rotating HTTP-only refresh cookie
+      summary: Sign in (verified email not required) and set rotating HTTP-only refresh cookie
       responses:
         '200': {description: Returns accessToken and user}
   /auth/refresh:

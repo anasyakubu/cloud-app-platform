@@ -21,7 +21,7 @@ This project executes **customer-uploaded code**. The isolation boundary is a de
 
 ## Identity and authorization
 
-- Argon2id password hash, 12-character minimum password, email verification via SES, hashed expiring reset/verification tokens, short-lived JWT bearer access, opaque rotating hashed refresh tokens in `HttpOnly`, `Secure` and `SameSite` cookies, logout invalidation and role checks.
+- Argon2id password hash, 5-character minimum password (per requested requirement; significantly weaker than recommended), email verification via SES, hashed expiring reset/verification tokens, short-lived JWT bearer access, opaque rotating hashed refresh tokens in `HttpOnly`, `Secure` and `SameSite` cookies, logout invalidation and role checks.
 - In production, use **same-site custom frontend and API domains** plus HTTPS. Server validates request Origin for cross-origin unsafe methods, and CORS is fixed to the exact allowed frontend. Audit authentication and implement stronger brute-force monitoring and optional MFA before wide release.
 - Every application/session/usage/log/ticket lookup checks `user`/`owner` in MongoDB. Admin APIs require elevated role and record an audit entry for admin changes. Super-admin role can only be seeded via privileged CLI.
 - Streaming ticket ciphertext is AES-256-CBC compatible with guacamole-lite but protected by a separate HMAC signature derived from the 32-byte secret. The gateway checks expiration, signature and authoritative session, and replaces any token-supplied host/password with DB values. VNC passwords are AES-256-GCM encrypted at rest in MongoDB.
@@ -57,3 +57,7 @@ aws ec2 describe-instances --filters Name=tag:Project,Values=CloudStream
 ```
 
 Never publish the VNC password, EC2 private IP, AWS access keys, signed S3 URLs, Secrets Manager values, or Guacamole session tickets in logs or support messages.
+
+## Optional email verification policy
+
+Users can register and use authenticated pages even before verifying their email. This intentionally allows accounts using unverified addresses and creates impersonation/abuse risk. Keep role and ownership checks, rate limits, suspension enforcement and SES resend cooldowns. Consider requiring verified email for sensitive actions (e.g., payments, account recovery, or high-value resource launches) if business requirements change; **this release does not require it for page access**. Do not interpret `verified=false` as an authorization failure.

@@ -1,3 +1,15 @@
+## November 2026 update — optional email verification
+
+**Email verification no longer blocks login or normal pages.** Users may register and automatically enter the dashboard, or log in to an existing unverified account. The backend no longer requires `verifiedAt` for issuing access tokens, refreshing sessions, or accessing authenticated routes. Suspended accounts are still blocked, and admin/ownership authorization is unchanged.
+
+When SES is correctly configured, registration attempts to send an **optional** verification link. If SES is disabled or sending fails, registration succeeds and accounts remain fully usable. Users can request a link later from **Profile → Email verification (optional)** or the public `/resend-verification` page. The forgot-password email flow still requires SES. See [OPTIONAL_EMAIL_VERIFICATION.md](OPTIONAL_EMAIL_VERIFICATION.md).
+
+## November 2026 authentication, 403 and SES update
+
+**Historical 403/SES fix:** [AUTH_SES_403_FIX.md](AUTH_SES_403_FIX.md) originally introduced required verification. **That policy has been superseded by this optional-verification update.** The fix retains SES email/password-reset delivery, multiple-origin CORS allowlisting, S3 CORS Terraform support, and the **5-character minimum password**. Five-character passwords are weak; encourage longer passwords in production.
+
+Per the request, this ZIP contains `backend/.env`, `frontend/.env`, and root `.env`. The backend file holds newly generated **development-only JWT/encryption keys** and non-secret AWS identifiers recovered from the supplied archive. The original credential-bearing `.env` was **not copied**. Replace local MongoDB credentials, SES identity, deployed URLs, and service credentials yourself. Files are excluded from Git, but a ZIP is still sensitive if you put real secrets in it: never publish it with real secrets. SES sending requires verified identity, AWS permissions, and sandbox/production access.
+
 # CloudStream — Native AWS cloud application streaming
 
 CloudStream is an actual **React + Node.js control plane** for uploading supported Linux software to Amazon S3, scanning and approving it, provisioning **one ephemeral EC2 VM per session**, launching the software as a restricted native user, and interacting with the running Xfce desktop over **TigerVNC → guacd → Guacamole protocol/WebSocket → browser**. AWS SDK v3 performs real API operations. There are no simulation endpoints, local desktop execution, or container-based deployment artifacts.
@@ -31,7 +43,7 @@ Nginx TLS -> Express/Node.js API on EC2 (127.0.0.1:4000)
    +-- S3: signed browser multipart PUT; worker malware scans and prep downloads
    +-- SQS: scan, provision, terminate work (with DLQ)
    +-- Paystack: initialize + verify + signed webhooks
-   +-- SES: registration verification and password reset email
+   +-- SES: optional registration verification and password reset email
    |
 Private native worker EC2 (no inbound ports; uses SQS)
    | EC2 RunInstances, EC2 TerminateInstances, SSM RunCommand

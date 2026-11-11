@@ -181,3 +181,7 @@ For deployment changes: stop admission, check currently active sessions, build b
 | Orphan EC2 remains | Worker reconciler, SQS DLQ, EC2 SessionId tags, IAM termination permissions |
 
 See also [STREAMING_SETUP.md](STREAMING_SETUP.md) and [SECURITY.md](SECURITY.md).
+
+## Authentication/CORS deployment update
+
+When deploying a replacement frontend domain, update the API `FRONTEND_URL`/`FRONTEND_ORIGINS`, the frontend build-time `VITE_API_URL`, and Terraform `frontend_url`/`additional_frontend_urls` then **restart the backend and rebuild the Vite frontend**. Existing unverified users can now log in and access their normal authenticated pages without verification; email verification via `/resend-verification` is optional. SES requires a verified sender, region, IAM, and sandbox rules as described in [AUTH_SES_403_FIX.md](AUTH_SES_403_FIX.md).

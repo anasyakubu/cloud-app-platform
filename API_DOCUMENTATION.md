@@ -1,3 +1,7 @@
+## Current authentication policy — email verification is optional
+
+`POST /auth/register` returns HTTP 201 with `{ accessToken, user, verificationEmailSent, message }` and sets an HTTP-only refresh cookie. The frontend automatically signs in and navigates to `/dashboard`. `POST /auth/login`, `POST /auth/refresh`, and bearer-authenticated user endpoints do not require `user.verified=true`. SES is not required for registration. Unverified users can request a verification email with `POST /auth/resend-verification`; when SES is unavailable that optional operation can return 503. Suspended users and unauthorized roles remain restricted. See `OPTIONAL_EMAIL_VERIFICATION.md`.
+
 # CloudStream API v1
 
 The OpenAPI 3 specification lives at `documentation/openapi.yaml`; the running API exposes Swagger UI at `https://api.example.com/api/v1/docs`. The API root is `/api/v1`. JSON request bodies are limited to 200 KiB; large file bytes go directly to S3 presigned URLs. Most authenticated endpoints require `Authorization: Bearer <accessToken>`. `POST /auth/refresh` uses the HTTP-only refresh cookie and rotates it.
@@ -7,6 +11,7 @@ The OpenAPI 3 specification lives at `documentation/openapi.yaml`; the running A
 | Verb | Route | Purpose |
 |---|---|---|
 | POST | `/auth/register` | Create name/email/password user and issue SES verification link |
+| POST | `/auth/resend-verification` | `{email}`; resends SES verification link for unverified accounts, with cooldown |
 | POST | `/auth/verify-email` | `{email,token}`; enables login |
 | POST | `/auth/login` | `{email,password}`; returns access token/user, sets refresh cookie |
 | POST | `/auth/refresh` | Rotate HTTP-only refresh token, return access JWT |
@@ -16,7 +21,7 @@ The OpenAPI 3 specification lives at `documentation/openapi.yaml`; the running A
 | GET/PATCH/DELETE | `/auth/me` | Profile/update name/account deletion |
 | POST | `/auth/change-password` | `{currentPassword,newPassword}` |
 
-Registration requires real SES delivery; no developer backdoor verification token is emitted by the public endpoint. `JWT_ACCESS_SECRET`, refresh secrets and cookies are server-only.
+Registration does not require SES delivery; an optional verification email is sent when SES is configured. No developer backdoor verification token is emitted by the public endpoint. `JWT_ACCESS_SECRET`, refresh secrets and cookies are server-only.
 
 ## Application multipart upload workflow
 
@@ -85,3 +90,7 @@ All `/admin/*` require `admin` or `super_admin` JWT role. Public registration ca
 ## API errors and validation
 
 Zod request errors return HTTP 400 with `{error,details}`, authentication errors 401, owner/role or unverified errors 403, missing resources 404, conflict 409, insufficient credits 402, server/service configuration failures 503 or 500. Some AWS failures are logged by the worker and reflected in session `failureReason`; not all failures occur synchronously in the HTTP request. Paginated list routes accept `page` and `limit` (up to 100). In a scaled deployment, standardize pagination cursor and trace IDs.
+
+### Authentication 403 repair (November 2026)
+
+Unverified accounts cannot log in (`403`, `code: EMAIL_NOT_VERIFIED`); request a fresh SES link using `/auth/resend-verification`. Regular user passwords have a minimum of five characters (admin seeding continues to require 16). Configure `FRONTEND_URL` plus optional comma-separated `FRONTEND_ORIGINS` for browser CORS; 403 for suspended accounts and normal users opening admin endpoints remains intentional. See [`AUTH_SES_403_FIX.md`](AUTH_SES_403_FIX.md).
